@@ -85,13 +85,27 @@ function App() {
         }),
       })
 
-      const data = await response.json()
+      const rawBody = await response.text()
+      let data = null
+
+      if (rawBody) {
+        try {
+          data = JSON.parse(rawBody)
+        } catch {
+          data = null
+        }
+      }
 
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
           throw new Error(
             'Похоже, ключ не подошёл. Откройте Настройки и вставьте действующий ключ с https://console.groq.com/keys',
           )
+        }
+
+        const apiMessage = data?.error?.message?.trim()
+        if (apiMessage) {
+          throw new Error(apiMessage)
         }
 
         throw new Error('Сервис временно недоступен. Попробуйте снова через минуту 🙌')
