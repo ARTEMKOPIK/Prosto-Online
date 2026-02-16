@@ -167,3 +167,27 @@ body {
 .bg-input { background: var(--color-input); }
 .bg-overlay { background: var(--color-overlay); }
 .shadow-main { --tw-shadow-color: color-mix(in srgb, var(--color-main) 35%, transparent); }
+
+.focus-ring {
+  outline: none;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.focus-ring:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 35%, transparent);
+}
+
+.loader-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 2px solid color-mix(in srgb, var(--color-accent-text) 60%, transparent);
+  border-top-color: var(--color-accent-text);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
