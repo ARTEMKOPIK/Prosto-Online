@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 
 const API_KEY_STORAGE = 'prosto-online-groq-key'
+const THEME_STORAGE = 'prosto-online-theme'
 
 const levelPrompts = {
   child:
@@ -20,6 +21,17 @@ const levelLabels = {
   senior: 'Пожилой',
 }
 
+const themeOptions = [
+  { value: 'light', label: 'Светлая' },
+  { value: 'dark', label: 'Тёмная' },
+  { value: 'forest', label: 'Лес' },
+  { value: 'sunset', label: 'Закат' },
+  { value: 'ocean', label: 'Океан' },
+  { value: 'lavender', label: 'Лаванда' },
+  { value: 'coffee', label: 'Кофе' },
+  { value: 'neon', label: 'Неон' },
+]
+
 function App() {
   const [question, setQuestion] = useState('')
   const [level, setLevel] = useState('adult')
@@ -29,12 +41,22 @@ function App() {
   const [showSettings, setShowSettings] = useState(false)
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [savedApiKey, setSavedApiKey] = useState('')
+  const [theme, setTheme] = useState('light')
 
   useEffect(() => {
     const key = localStorage.getItem(API_KEY_STORAGE) || ''
+    const savedTheme = localStorage.getItem(THEME_STORAGE) || 'light'
+    const hasTheme = themeOptions.some((option) => option.value === savedTheme)
+
     setSavedApiKey(key)
     setApiKeyInput(key)
+    setTheme(hasTheme ? savedTheme : 'light')
   }, [])
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem(THEME_STORAGE, theme)
+  }, [theme])
 
   const hasApiKey = useMemo(() => savedApiKey.trim().length > 0, [savedApiKey])
 
@@ -125,48 +147,65 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen px-4 py-6 sm:px-6">
-      <div className="mx-auto max-w-3xl rounded-3xl border border-slate-200 bg-white/95 p-5 shadow-xl sm:p-8">
+    <div className="min-h-screen bg-app px-4 py-6 text-main transition-colors sm:px-6">
+      <div className="mx-auto max-w-3xl rounded-3xl border border-main bg-card p-5 shadow-xl transition-colors sm:p-8">
         <div className="mb-6 flex items-start justify-between gap-4">
           <div>
-            <p className="mb-2 inline-flex rounded-full bg-blue-100 px-3 py-1 text-xs font-bold text-blue-700">
+            <p className="mb-2 inline-flex rounded-full bg-badge px-3 py-1 text-xs font-bold text-badge-text">
               Просто.Онлайн
             </p>
-            <h1 className="text-3xl font-extrabold leading-tight text-slate-900 sm:text-4xl">
+            <h1 className="text-3xl font-extrabold leading-tight sm:text-4xl">
               Объясняем сложное
-              <span className="text-blue-600"> простыми словами</span>
+              <span className="text-accent"> простыми словами</span>
             </h1>
-            <p className="mt-3 text-base text-slate-600 sm:text-lg">
+            <p className="mt-3 text-base text-soft sm:text-lg">
               Введите любой вопрос, выберите уровень, нажмите «Объяснить» — и получите понятный ответ за секунды.
             </p>
           </div>
           <button
             type="button"
             onClick={() => setShowSettings(true)}
-            className="shrink-0 rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-700"
+            className="shrink-0 rounded-2xl bg-main-button px-4 py-3 text-sm font-semibold text-main-button-text transition hover:opacity-90"
           >
             Настройки
           </button>
         </div>
 
+        <div className="mb-4 rounded-2xl border border-main bg-card-soft px-4 py-3">
+          <label className="block">
+            <span className="mb-2 block text-sm font-semibold text-soft">Тема оформления</span>
+            <select
+              value={theme}
+              onChange={(e) => setTheme(e.target.value)}
+              className="w-full rounded-2xl border border-main bg-input px-4 py-3 text-base text-main outline-none ring-accent/30 transition focus:ring"
+            >
+              {themeOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
         <div className="space-y-4">
           <label className="block">
-            <span className="mb-2 block text-sm font-semibold text-slate-700">Что нужно объяснить?</span>
+            <span className="mb-2 block text-sm font-semibold text-soft">Что нужно объяснить?</span>
             <textarea
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               rows={4}
               placeholder="Например: Объясни, как работает ипотека простыми словами"
-              className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-base outline-none ring-blue-200 transition focus:ring"
+              className="w-full rounded-2xl border border-main bg-input px-4 py-3 text-base text-main outline-none ring-accent/30 transition focus:ring"
             />
           </label>
 
           <label className="block">
-            <span className="mb-2 block text-sm font-semibold text-slate-700">Уровень объяснения</span>
+            <span className="mb-2 block text-sm font-semibold text-soft">Уровень объяснения</span>
             <select
               value={level}
               onChange={(e) => setLevel(e.target.value)}
-              className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-base outline-none ring-blue-200 transition focus:ring"
+              className="w-full rounded-2xl border border-main bg-input px-4 py-3 text-base text-main outline-none ring-accent/30 transition focus:ring"
             >
               {Object.entries(levelLabels).map(([value, label]) => (
                 <option key={value} value={value}>
@@ -180,20 +219,20 @@ function App() {
             type="button"
             onClick={explain}
             disabled={loading}
-            className="w-full rounded-2xl bg-blue-600 px-5 py-4 text-lg font-bold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-blue-300"
+            className="w-full rounded-2xl bg-accent px-5 py-4 text-lg font-bold text-accent-text transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {loading ? 'Объясняю...' : 'Объяснить'}
           </button>
 
           {error && (
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-medium text-rose-700">
+            <div className="rounded-2xl border border-rose-300 bg-rose-100 px-4 py-3 text-sm font-medium text-rose-800">
               {error}
             </div>
           )}
 
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <h2 className="mb-2 text-sm font-bold uppercase tracking-wide text-slate-500">Ответ</h2>
-            <p className="whitespace-pre-wrap text-base leading-relaxed text-slate-800">
+          <div className="rounded-2xl border border-main bg-card-soft p-4">
+            <h2 className="mb-2 text-sm font-bold uppercase tracking-wide text-soft">Ответ</h2>
+            <p className="whitespace-pre-wrap text-base leading-relaxed text-main">
               {answer || 'Здесь появится готовое понятное объяснение.'}
             </p>
           </div>
@@ -201,39 +240,39 @@ function App() {
       </div>
 
       {showSettings && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
-          <div className="w-full max-w-lg rounded-3xl bg-white p-6 shadow-2xl">
-            <h3 className="text-2xl font-extrabold text-slate-900">Настройки Groq</h3>
-            <p className="mt-2 text-sm text-slate-600">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay p-4">
+          <div className="w-full max-w-lg rounded-3xl border border-main bg-card p-6 shadow-2xl">
+            <h3 className="text-2xl font-extrabold">Настройки Groq</h3>
+            <p className="mt-2 text-sm text-soft">
               Вставьте ключ один раз — мы сохраним его в этом браузере. Получить ключ можно в личном кабинете:
               <span className="font-semibold"> https://console.groq.com/keys</span>
             </p>
 
             <label className="mt-4 block">
-              <span className="mb-2 block text-sm font-semibold text-slate-700">Groq API Key</span>
+              <span className="mb-2 block text-sm font-semibold text-soft">Groq API Key</span>
               <input
                 type="password"
                 value={apiKeyInput}
                 onChange={(e) => setApiKeyInput(e.target.value)}
                 placeholder="gsk_..."
-                className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-base outline-none ring-blue-200 transition focus:ring"
+                className="w-full rounded-2xl border border-main bg-input px-4 py-3 text-base text-main outline-none ring-accent/30 transition focus:ring"
               />
             </label>
 
-            <div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <button
-                type="button"
-                onClick={saveApiKey}
-                className="rounded-2xl bg-blue-600 px-4 py-3 text-base font-bold text-white transition hover:bg-blue-500"
-              >
-                Сохранить
-              </button>
+            <div className="mt-5 flex flex-wrap justify-end gap-3">
               <button
                 type="button"
                 onClick={() => setShowSettings(false)}
-                className="rounded-2xl bg-slate-200 px-4 py-3 text-base font-semibold text-slate-700 transition hover:bg-slate-300"
+                className="rounded-2xl border border-main bg-card-soft px-4 py-3 text-sm font-semibold text-main transition hover:opacity-90"
               >
-                Закрыть
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={saveApiKey}
+                className="rounded-2xl bg-accent px-4 py-3 text-sm font-bold text-accent-text transition hover:brightness-110"
+              >
+                Сохранить ключ
               </button>
             </div>
           </div>
