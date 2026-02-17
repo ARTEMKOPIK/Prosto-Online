@@ -191,3 +191,27 @@ body {
     transform: rotate(360deg);
   }
 }
+
+.skeleton-line {
+  background: color-mix(in srgb, var(--color-main) 16%, transparent);
+  animation: pulse 1.15s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .focus-ring,
+  .loader-dot,
+  .skeleton-line {
+    transition: none !important;
+    animation: none !important;
+  }
+}
