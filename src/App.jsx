@@ -320,6 +320,7 @@ function App() {
   const trimmedQuestion = question.trim()
   const isAuthed = Boolean(authSession?.email)
   const canExplain = isAuthed && trimmedQuestion.length > 3 && !loading && question.length <= MAX_QUESTION_LENGTH
+  const setupReady = hasSupabaseConfig && hasApiKey && isAuthed
   const questionLength = question.length
   const remainingChars = MAX_QUESTION_LENGTH - questionLength
   const isNearLimit = remainingChars <= 50
@@ -798,7 +799,10 @@ function App() {
             <div className="mb-2 flex flex-wrap items-center gap-2">
               <p className="inline-flex rounded-full bg-badge px-3 py-1 text-xs font-bold text-badge-text">Просто.Онлайн</p>
               <span className={`rounded-full px-3 py-1 text-xs font-bold ${hasApiKey ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                {hasApiKey ? 'Ключ подключён' : 'Добавьте API-ключ'}
+                {hasApiKey ? 'Ключ Groq подключён' : 'Добавьте ключ Groq'}
+              </span>
+              <span className={`rounded-full px-3 py-1 text-xs font-bold ${hasSupabaseConfig ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                {hasSupabaseConfig ? 'Supabase подключён' : 'Добавьте Supabase'}
               </span>
             </div>
             <h1 className="text-3xl font-extrabold leading-tight sm:text-4xl">
@@ -816,6 +820,35 @@ function App() {
           >
             Настройки
           </button>
+        </div>
+
+        <div className="mb-4 rounded-2xl border border-main bg-card-soft p-4">
+          <p className="text-sm font-bold text-main">Быстрый запуск без нервов (1 минута)</p>
+          <ul className="mt-2 space-y-2 text-sm">
+            <li className="flex items-center justify-between gap-2">
+              <span>1) Добавить Supabase (Project URL + ANON KEY) в Настройках</span>
+              <span className={`rounded-full px-3 py-1 text-xs font-bold ${hasSupabaseConfig ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                {hasSupabaseConfig ? 'Готово' : 'Не настроено'}
+              </span>
+            </li>
+            <li className="flex items-center justify-between gap-2">
+              <span>2) Добавить Groq API-ключ в Настройках</span>
+              <span className={`rounded-full px-3 py-1 text-xs font-bold ${hasApiKey ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                {hasApiKey ? 'Готово' : 'Не настроено'}
+              </span>
+            </li>
+            <li className="flex items-center justify-between gap-2">
+              <span>3) Войти по почте через код из письма</span>
+              <span className={`rounded-full px-3 py-1 text-xs font-bold ${isAuthed ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                {isAuthed ? 'Готово' : 'Не выполнено'}
+              </span>
+            </li>
+          </ul>
+          <p className={`mt-3 rounded-xl px-3 py-2 text-sm font-semibold ${setupReady ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-900'}`}>
+            {setupReady
+              ? 'Всё подключено: можно спокойно задавать вопросы и получать ответы.'
+              : 'Если что-то не работает — первым делом откройте «Настройки» и проверьте, что оба ключа вставлены.'}
+          </p>
         </div>
 
         <div className="mb-4 grid gap-3 rounded-2xl border border-main bg-card-soft px-4 py-3 sm:grid-cols-2">
@@ -1091,7 +1124,7 @@ function App() {
           >
             <div className="flex items-start justify-between gap-3">
               <h3 id="settings-title" className="text-2xl font-extrabold">
-                Настройки Groq
+                Настройки сервиса
               </h3>
               <button
                 type="button"
@@ -1103,8 +1136,7 @@ function App() {
               </button>
             </div>
             <p className="mt-2 text-sm text-soft">
-              Вставьте ключ один раз — мы сохраним его в этом браузере. Получить ключ можно в личном кабинете:
-              <span className="font-semibold"> https://console.groq.com/keys</span>
+              Здесь один раз добавляете данные, и дальше всё работает автоматически в этом браузере.
             </p>
 
             <div className="mt-4 rounded-2xl border border-main bg-card-soft p-4">
@@ -1153,9 +1185,16 @@ function App() {
               >
                 Сохранить настройки авторизации
               </button>
+              <p className="mt-2 text-xs text-soft">
+                После сохранения вернитесь в блок входа выше, нажмите «Отправить код» и введите цифры из письма.
+              </p>
             </div>
 
-            <label className="mt-4 block" htmlFor="api-key">
+            <p className="mt-4 text-xs text-soft">
+              Groq нужен для ответов ассистента. Ключ берётся тут: <span className="font-semibold">https://console.groq.com/keys</span>
+            </p>
+
+            <label className="mt-2 block" htmlFor="api-key">
               <span className="mb-2 block text-sm font-semibold text-soft">Groq API Key</span>
               <div className="flex gap-2">
                 <input
