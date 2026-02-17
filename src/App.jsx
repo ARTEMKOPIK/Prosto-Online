@@ -6,15 +6,14 @@ const LEVEL_STORAGE = 'prosto-online-level'
 const DRAFT_STORAGE = 'prosto-online-question-draft'
 const MODE_STORAGE = 'prosto-online-mode'
 const HISTORY_STORAGE = 'prosto-online-history'
-const USERS_STORAGE = 'prosto-online-auth-users'
+const SUPABASE_URL_STORAGE = 'prosto-online-supabase-url'
+const SUPABASE_ANON_STORAGE = 'prosto-online-supabase-anon'
 const AUTH_PENDING_STORAGE = 'prosto-online-auth-pending'
 const AUTH_SESSION_STORAGE = 'prosto-online-auth-session'
 const MAX_QUESTION_LENGTH = 350
 const MAX_HISTORY_ITEMS = 10
 const CODE_LENGTH = 6
-const CODE_TTL_MS = 10 * 60 * 1000
 const CODE_COOLDOWN_SECONDS = 60
-const CODE_MAX_ATTEMPTS = 5
 
 const levelPrompts = {
   child:
@@ -120,21 +119,25 @@ const buildCheckQuestions = (questionText) => {
 
 const normalizeEmail = (value) => value.trim().toLowerCase()
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
-const generateCode = () => String(Math.floor(Math.random() * 10 ** CODE_LENGTH)).padStart(CODE_LENGTH, '0')
+const sanitizeSupabaseUrl = (value) => value.trim().replace(/\/$/, '')
 
-const readUsers = () => {
-  const raw = localStorage.getItem(USERS_STORAGE) || '[]'
+const buildSupabaseHeaders = (anonKey) => ({
+  'Content-Type': 'application/json',
+  apikey: anonKey,
+})
+
+const parseApiJson = async (response) => {
+  const raw = await response.text()
+
+  if (!raw) {
+    return null
+  }
 
   try {
-    const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed : []
+    return JSON.parse(raw)
   } catch {
-    return []
+    return null
   }
-}
-
-const saveUsers = (users) => {
-  localStorage.setItem(USERS_STORAGE, JSON.stringify(users))
 }
 
 function App() {
@@ -160,6 +163,12 @@ function App() {
   const [authSession, setAuthSession] = useState(null)
   const [authNotice, setAuthNotice] = useState('')
   const [authError, setAuthError] = useState('')
+  const [authLoading, setAuthLoading] = useState(false)
+  const [supabaseUrlInput, setSupabaseUrlInput] = useState('')
+  const [supabaseAnonInput, setSupabaseAnonInput] = useState('')
+  const [savedSupabaseUrl, setSavedSupabaseUrl] = useState('')
+  const [savedSupabaseAnon, setSavedSupabaseAnon] = useState('')
+  const [showSupabaseAnon, setShowSupabaseAnon] = useState(false)
   const [now, setNow] = useState(Date.now())
 
   const questionRef = useRef(null)
@@ -171,6 +180,8 @@ function App() {
     const savedLevel = localStorage.getItem(LEVEL_STORAGE) || 'adult'
     const savedDraft = localStorage.getItem(DRAFT_STORAGE) || ''
     const savedMode = localStorage.getItem(MODE_STORAGE) || 'fast'
+    const savedSupabaseUrlValue = localStorage.getItem(SUPABASE_URL_STORAGE) || ''
+    const savedSupabaseAnonValue = localStorage.getItem(SUPABASE_ANON_STORAGE) || ''
     const rawHistory = localStorage.getItem(HISTORY_STORAGE) || '[]'
 
     const hasTheme = themeOptions.some((option) => option.value === savedTheme)
@@ -194,6 +205,10 @@ function App() {
     setLifeMode(hasMode ? savedMode : 'fast')
     setQuestion(savedDraft.slice(0, MAX_QUESTION_LENGTH))
     setHistory(parsedHistory)
+    setSupabaseUrlInput(savedSupabaseUrlValue)
+    setSupabaseAnonInput(savedSupabaseAnonValue)
+    setSavedSupabaseUrl(savedSupabaseUrlValue)
+    setSavedSupabaseAnon(savedSupabaseAnonValue)
 
     const rawPending = localStorage.getItem(AUTH_PENDING_STORAGE)
     const rawSession = localStorage.getItem(AUTH_SESSION_STORAGE)
@@ -201,7 +216,7 @@ function App() {
     if (rawPending) {
       try {
         const parsedPending = JSON.parse(rawPending)
-        if (parsedPending?.email && parsedPending?.code && parsedPending?.expiresAt > Date.now()) {
+        if (parsedPending?.email && parsedPending?.expiresAt > Date.now()) {
           setAuthPending(parsedPending)
           setAuthEmail(parsedPending.email)
           setAuthMode(parsedPending.type || 'login')
@@ -298,6 +313,10 @@ function App() {
   }, [])
 
   const hasApiKey = useMemo(() => savedApiKey.trim().length > 0, [savedApiKey])
+  const hasSupabaseConfig = useMemo(
+    () => Boolean(savedSupabaseUrl.trim() && savedSupabaseAnon.trim()),
+    [savedSupabaseAnon, savedSupabaseUrl],
+  )
   const trimmedQuestion = question.trim()
   const isAuthed = Boolean(authSession?.email)
   const canExplain = isAuthed && trimmedQuestion.length > 3 && !loading && question.length <= MAX_QUESTION_LENGTH
@@ -308,6 +327,27 @@ function App() {
   const isCodeFlowActive = Boolean(authPending)
   const cooldownLeft = authPending ? Math.max(0, Math.ceil((authPending.cooldownUntil - now) / 1000)) : 0
   const expiresIn = authPending ? Math.max(0, Math.ceil((authPending.expiresAt - now) / 1000)) : 0
+
+  const saveAuthSettings = () => {
+    const cleanedUrl = sanitizeSupabaseUrl(supabaseUrlInput)
+    const cleanedAnon = supabaseAnonInput.trim()
+
+    localStorage.setItem(SUPABASE_URL_STORAGE, cleanedUrl)
+    localStorage.setItem(SUPABASE_ANON_STORAGE, cleanedAnon)
+
+    setSupabaseUrlInput(cleanedUrl)
+    setSupabaseAnonInput(cleanedAnon)
+    setSavedSupabaseUrl(cleanedUrl)
+    setSavedSupabaseAnon(cleanedAnon)
+    setAuthError('')
+
+    if (!cleanedUrl || !cleanedAnon) {
+      setStatus('Реальная авторизация отключена: заполните URL и ANON KEY от Supabase.')
+      return
+    }
+
+    setStatus('Настройки авторизации сохранены. Теперь вход работает через реальный Supabase.')
+  }
 
   const saveApiKey = () => {
     const cleaned = apiKeyInput.trim()
@@ -345,6 +385,12 @@ function App() {
   }
 
   const requestEmailCode = () => {
+    if (!hasSupabaseConfig) {
+      setAuthError('Сначала откройте «Настройки» и добавьте Supabase URL + ANON KEY.')
+      setShowSettings(true)
+      return
+    }
+
     const email = normalizeEmail(authEmail)
 
     if (!isValidEmail(email)) {
@@ -357,37 +403,56 @@ function App() {
       return
     }
 
-    const users = readUsers()
-    const hasUser = users.some((user) => user.email === email)
-
-    if (authMode === 'signup' && hasUser) {
-      setAuthError('Этот email уже зарегистрирован. Переключитесь на вход.')
-      return
-    }
-
-    if (authMode === 'login' && !hasUser) {
-      setAuthError('Такого email пока нет. Сначала зарегистрируйтесь.')
-      return
-    }
-
-    const code = generateCode()
-    const pending = {
-      email,
-      code,
-      type: authMode,
-      attemptsLeft: CODE_MAX_ATTEMPTS,
-      expiresAt: Date.now() + CODE_TTL_MS,
-      cooldownUntil: Date.now() + CODE_COOLDOWN_SECONDS * 1000,
-    }
-
-    setAuthPending(pending)
-    setAuthCode('')
-    setAuthEmail(email)
+    setAuthLoading(true)
     setAuthError('')
-    setAuthNotice(`Код отправлен на ${email}. Для демо он тоже показан здесь: ${code}`)
+    setAuthNotice('Отправляем письмо с кодом...')
+
+    const endpoint = `${savedSupabaseUrl}/auth/v1/otp`
+
+    fetch(endpoint, {
+      method: 'POST',
+      headers: buildSupabaseHeaders(savedSupabaseAnon),
+      body: JSON.stringify({
+        email,
+        create_user: authMode === 'signup',
+      }),
+    })
+      .then(async (response) => {
+        const data = await parseApiJson(response)
+
+        if (!response.ok) {
+          const apiMessage = data?.msg || data?.error_description || data?.error || 'Не удалось отправить код.'
+          throw new Error(apiMessage)
+        }
+
+        const pending = {
+          email,
+          type: authMode,
+          expiresAt: Date.now() + 10 * 60 * 1000,
+          cooldownUntil: Date.now() + CODE_COOLDOWN_SECONDS * 1000,
+        }
+
+        setAuthPending(pending)
+        setAuthCode('')
+        setAuthEmail(email)
+        setAuthError('')
+        setAuthNotice(`Готово! Код отправлен на ${email}. Проверьте почту.`)
+      })
+      .catch((err) => {
+        setAuthError(err.message || 'Не получилось отправить код. Попробуйте ещё раз.')
+      })
+      .finally(() => {
+        setAuthLoading(false)
+      })
   }
 
-  const verifyEmailCode = () => {
+  const verifyEmailCode = async () => {
+    if (!hasSupabaseConfig) {
+      setAuthError('Нужно добавить Supabase URL и ANON KEY в «Настройки».')
+      setShowSettings(true)
+      return
+    }
+
     if (!authPending) {
       setAuthError('Сначала нажмите «Отправить код».')
       return
@@ -406,39 +471,45 @@ function App() {
       return
     }
 
-    if (enteredCode !== authPending.code) {
-      const attemptsLeft = authPending.attemptsLeft - 1
+    setAuthLoading(true)
+    setAuthError('')
 
-      if (attemptsLeft <= 0) {
-        setAuthPending(null)
-        setAuthCode('')
-        setAuthError('Слишком много попыток. Запросите новый код.')
-        return
+    try {
+      const response = await fetch(`${savedSupabaseUrl}/auth/v1/verify`, {
+        method: 'POST',
+        headers: buildSupabaseHeaders(savedSupabaseAnon),
+        body: JSON.stringify({
+          email: authPending.email,
+          token: enteredCode,
+          type: 'email',
+        }),
+      })
+
+      const data = await parseApiJson(response)
+
+      if (!response.ok) {
+        const apiMessage = data?.msg || data?.error_description || data?.error || 'Код не подошёл.'
+        throw new Error(apiMessage)
       }
 
-      setAuthPending((prev) => ({ ...prev, attemptsLeft }))
-      setAuthError(`Неверный код. Осталось попыток: ${attemptsLeft}.`)
-      return
+      const session = {
+        email: data?.user?.email || authPending.email,
+        accessToken: data?.access_token || '',
+        refreshToken: data?.refresh_token || '',
+        signedInAt: new Date().toISOString(),
+      }
+
+      setAuthSession(session)
+      setAuthPending(null)
+      setAuthCode('')
+      setAuthError('')
+      setAuthNotice(`Готово! Вы вошли как ${session.email}.`)
+      setStatus('Авторизация прошла успешно. Теперь доступны все функции.')
+    } catch (err) {
+      setAuthError(err.message || 'Код не подошёл. Проверьте цифры и попробуйте снова.')
+    } finally {
+      setAuthLoading(false)
     }
-
-    const users = readUsers()
-
-    if (authPending.type === 'signup' && !users.some((user) => user.email === authPending.email)) {
-      users.push({ email: authPending.email, createdAt: new Date().toISOString() })
-      saveUsers(users)
-    }
-
-    const session = {
-      email: authPending.email,
-      signedInAt: new Date().toISOString(),
-    }
-
-    setAuthSession(session)
-    setAuthPending(null)
-    setAuthCode('')
-    setAuthError('')
-    setAuthNotice(`Готово! Вы вошли как ${session.email}.`)
-    setStatus('Авторизация прошла успешно. Теперь доступны все функции.')
   }
 
   const logout = () => {
@@ -654,10 +725,14 @@ function App() {
                 <button
                   type="button"
                   onClick={requestEmailCode}
-                  disabled={Boolean(authPending && cooldownLeft > 0)}
+                  disabled={Boolean((authPending && cooldownLeft > 0) || authLoading)}
                   className="focus-ring rounded-2xl bg-main-button px-4 py-3 text-sm font-semibold text-main-button-text transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {authPending && cooldownLeft > 0 ? `Отправить снова через ${cooldownLeft} сек` : 'Отправить код'}
+                  {authLoading
+                    ? 'Отправляем...'
+                    : authPending && cooldownLeft > 0
+                      ? `Отправить снова через ${cooldownLeft} сек`
+                      : 'Отправить код'}
                 </button>
 
                 <label className="block" htmlFor="auth-code-input">
@@ -678,14 +753,14 @@ function App() {
               <button
                 type="button"
                 onClick={verifyEmailCode}
-                disabled={!isCodeFlowActive}
+                disabled={!isCodeFlowActive || authLoading}
                 className="focus-ring mt-3 w-full rounded-2xl bg-accent px-4 py-3 text-sm font-bold text-accent-text transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Подтвердить и войти
+                {authLoading ? 'Проверяем...' : 'Подтвердить и войти'}
               </button>
 
               {isCodeFlowActive && (
-                <p className="mt-2 text-xs text-soft">Код действителен ещё {expiresIn} сек. Осталось попыток: {authPending.attemptsLeft}.</p>
+                <p className="mt-2 text-xs text-soft">Код действителен ещё {expiresIn} сек.</p>
               )}
             </>
           ) : (
@@ -712,7 +787,7 @@ function App() {
             <p className="font-bold">Первый запуск за 3 шага:</p>
             <ol className="mt-2 list-decimal space-y-1 pl-4">
               <li>Нажмите кнопку «Настройки» справа сверху.</li>
-              <li>Вставьте ваш ключ с сайта Groq и сохраните.</li>
+              <li>Вставьте ваш ключ Groq и данные Supabase (URL + ANON KEY).</li>
               <li>Введите вопрос и нажмите «Объяснить».</li>
             </ol>
           </div>
@@ -1031,6 +1106,54 @@ function App() {
               Вставьте ключ один раз — мы сохраним его в этом браузере. Получить ключ можно в личном кабинете:
               <span className="font-semibold"> https://console.groq.com/keys</span>
             </p>
+
+            <div className="mt-4 rounded-2xl border border-main bg-card-soft p-4">
+              <p className="text-sm font-bold text-main">Реальная авторизация через Supabase</p>
+              <p className="mt-1 text-xs text-soft">
+                Откройте Supabase → Settings → API и вставьте Project URL и anon public key.
+              </p>
+
+              <label className="mt-3 block" htmlFor="supabase-url">
+                <span className="mb-2 block text-sm font-semibold text-soft">Supabase Project URL</span>
+                <input
+                  id="supabase-url"
+                  type="url"
+                  value={supabaseUrlInput}
+                  onChange={(e) => setSupabaseUrlInput(e.target.value)}
+                  placeholder="https://xxxxx.supabase.co"
+                  className="focus-ring w-full rounded-2xl border border-main bg-input px-4 py-3 text-base text-main"
+                />
+              </label>
+
+              <label className="mt-3 block" htmlFor="supabase-anon">
+                <span className="mb-2 block text-sm font-semibold text-soft">Supabase ANON KEY</span>
+                <div className="flex gap-2">
+                  <input
+                    id="supabase-anon"
+                    type={showSupabaseAnon ? 'text' : 'password'}
+                    value={supabaseAnonInput}
+                    onChange={(e) => setSupabaseAnonInput(e.target.value)}
+                    placeholder="eyJ..."
+                    className="focus-ring w-full rounded-2xl border border-main bg-input px-4 py-3 text-base text-main"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSupabaseAnon((prev) => !prev)}
+                    className="focus-ring rounded-2xl border border-main bg-card-soft px-3 py-2 text-xs font-bold"
+                  >
+                    {showSupabaseAnon ? 'Скрыть' : 'Показать'}
+                  </button>
+                </div>
+              </label>
+
+              <button
+                type="button"
+                onClick={saveAuthSettings}
+                className="focus-ring mt-3 rounded-2xl border border-main bg-input px-4 py-3 text-sm font-bold text-main"
+              >
+                Сохранить настройки авторизации
+              </button>
+            </div>
 
             <label className="mt-4 block" htmlFor="api-key">
               <span className="mb-2 block text-sm font-semibold text-soft">Groq API Key</span>
