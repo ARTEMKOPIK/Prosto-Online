@@ -4,7 +4,10 @@ const API_KEY_STORAGE = 'prosto-online-groq-key'
 const THEME_STORAGE = 'prosto-online-theme'
 const LEVEL_STORAGE = 'prosto-online-level'
 const DRAFT_STORAGE = 'prosto-online-question-draft'
+const MODE_STORAGE = 'prosto-online-mode'
+const HISTORY_STORAGE = 'prosto-online-history'
 const MAX_QUESTION_LENGTH = 350
+const MAX_HISTORY_ITEMS = 10
 
 const levelPrompts = {
   child:
@@ -24,6 +27,25 @@ const levelLabels = {
   senior: 'Пожилой',
 }
 
+const lifeModes = {
+  fast: {
+    label: 'Быстро за 30 секунд',
+    prompt: 'Ответ дай очень коротко: максимум 4-5 предложений и только самое главное.',
+  },
+  exam: {
+    label: 'Перед экзаменом',
+    prompt: 'Объясняй так, чтобы легче запомнить: структура, ключевые тезисы, мини-шпаргалка в конце.',
+  },
+  parents: {
+    label: 'Для разговора с родителями',
+    prompt: 'Объясняй спокойно и по-доброму, чтобы можно было пересказать дома без споров.',
+  },
+  interview: {
+    label: 'Для собеседования',
+    prompt: 'Сфокусируйся на практической стороне и формулировках, которые звучат уверенно в разговоре.',
+  },
+}
+
 const themeOptions = [
   { value: 'light', label: 'Светлая' },
   { value: 'dark', label: 'Тёмная' },
@@ -35,15 +57,64 @@ const themeOptions = [
   { value: 'neon', label: 'Неон' },
 ]
 
-const quickExamples = [
-  'Объясни, зачем нужна финансовая подушка',
-  'Как работает инфляция простыми словами?',
-  'Почему телефон быстро разряжается?',
+const templateCards = [
+  {
+    title: 'Деньги и бюджет',
+    question: 'Объясни, как накопить финансовую подушку без жёсткой экономии',
+  },
+  {
+    title: 'Техника дома',
+    question: 'Почему телефон быстро разряжается и как это исправить?',
+  },
+  {
+    title: 'Здоровье',
+    question: 'Объясни простыми словами, как укреплять иммунитет каждый день',
+  },
+  {
+    title: 'Документы и жизнь',
+    question: 'Как работает ипотека простыми словами и на что смотреть в договоре?',
+  },
 ]
+
+const buildReliability = (answerText) => {
+  const text = answerText.trim()
+
+  if (!text) {
+    return { level: '—', description: 'Пока нет ответа для оценки надёжности.' }
+  }
+
+  const lowConfidenceWords = ['возможно', 'может', 'примерно', 'иногда', 'зависит']
+  const textLower = text.toLowerCase()
+  const hasLowConfidenceWords = lowConfidenceWords.some((word) => textLower.includes(word))
+
+  if (text.length < 220 || hasLowConfidenceWords) {
+    return {
+      level: 'Средний',
+      description: 'Похоже на рабочее объяснение, но лучше перепроверить цифры и важные факты.',
+    }
+  }
+
+  return {
+    level: 'Высокий',
+    description: 'Ответ выглядит уверенным и подробным. Всё равно полезно перепроверить важные решения.',
+  }
+}
+
+const buildCheckQuestions = (questionText) => {
+  if (!questionText.trim()) {
+    return []
+  }
+
+  return [
+    'Сможете объяснить эту тему своими словами в 2-3 коротких предложениях?',
+    'Какой один практический шаг вы готовы сделать сегодня по этой теме?',
+  ]
+}
 
 function App() {
   const [question, setQuestion] = useState('')
   const [level, setLevel] = useState('adult')
+  const [lifeMode, setLifeMode] = useState('fast')
   const [answer, setAnswer] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -53,6 +124,9 @@ function App() {
   const [savedApiKey, setSavedApiKey] = useState('')
   const [theme, setTheme] = useState('light')
   const [showApiKey, setShowApiKey] = useState(false)
+  const [history, setHistory] = useState([])
+  const [selfCheck, setSelfCheck] = useState([])
+  const [isSpeaking, setIsSpeaking] = useState(false)
 
   const questionRef = useRef(null)
   const settingsPanelRef = useRef(null)
@@ -62,15 +136,30 @@ function App() {
     const savedTheme = localStorage.getItem(THEME_STORAGE) || 'light'
     const savedLevel = localStorage.getItem(LEVEL_STORAGE) || 'adult'
     const savedDraft = localStorage.getItem(DRAFT_STORAGE) || ''
+    const savedMode = localStorage.getItem(MODE_STORAGE) || 'fast'
+    const rawHistory = localStorage.getItem(HISTORY_STORAGE) || '[]'
 
     const hasTheme = themeOptions.some((option) => option.value === savedTheme)
     const hasLevel = Object.hasOwn(levelLabels, savedLevel)
+    const hasMode = Object.hasOwn(lifeModes, savedMode)
+
+    let parsedHistory = []
+    try {
+      const json = JSON.parse(rawHistory)
+      if (Array.isArray(json)) {
+        parsedHistory = json.filter((item) => item?.question && item?.answer).slice(0, MAX_HISTORY_ITEMS)
+      }
+    } catch {
+      parsedHistory = []
+    }
 
     setSavedApiKey(key)
     setApiKeyInput(key)
     setTheme(hasTheme ? savedTheme : 'light')
     setLevel(hasLevel ? savedLevel : 'adult')
+    setLifeMode(hasMode ? savedMode : 'fast')
     setQuestion(savedDraft.slice(0, MAX_QUESTION_LENGTH))
+    setHistory(parsedHistory)
   }, [])
 
   useEffect(() => {
@@ -83,8 +172,16 @@ function App() {
   }, [level])
 
   useEffect(() => {
+    localStorage.setItem(MODE_STORAGE, lifeMode)
+  }, [lifeMode])
+
+  useEffect(() => {
     localStorage.setItem(DRAFT_STORAGE, question)
   }, [question])
+
+  useEffect(() => {
+    localStorage.setItem(HISTORY_STORAGE, JSON.stringify(history))
+  }, [history])
 
   useEffect(() => {
     if (showSettings) {
@@ -95,12 +192,21 @@ function App() {
     questionRef.current?.focus()
   }, [showSettings])
 
+  useEffect(() => {
+    return () => {
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel()
+      }
+    }
+  }, [])
+
   const hasApiKey = useMemo(() => savedApiKey.trim().length > 0, [savedApiKey])
   const trimmedQuestion = question.trim()
   const canExplain = trimmedQuestion.length > 3 && !loading && question.length <= MAX_QUESTION_LENGTH
   const questionLength = question.length
   const remainingChars = MAX_QUESTION_LENGTH - questionLength
   const isNearLimit = remainingChars <= 50
+  const reliability = useMemo(() => buildReliability(answer), [answer])
 
   const saveApiKey = () => {
     const cleaned = apiKeyInput.trim()
@@ -124,13 +230,28 @@ function App() {
     }
   }
 
-  const explain = async () => {
-    if (trimmedQuestion.length < 4) {
+  const addToHistory = (questionText, answerText) => {
+    const entry = {
+      id: Date.now(),
+      question: questionText,
+      answer: answerText,
+      level,
+      mode: lifeModes[lifeMode].label,
+      createdAt: new Date().toISOString(),
+    }
+
+    setHistory((prev) => [entry, ...prev].slice(0, MAX_HISTORY_ITEMS))
+  }
+
+  const explain = async (customPrompt = trimmedQuestion) => {
+    const prompt = customPrompt.trim()
+
+    if (prompt.length < 4) {
       setError('Добавьте чуть больше деталей (минимум 4 символа), и я всё разложу по полочкам.')
       return
     }
 
-    if (questionLength > MAX_QUESTION_LENGTH) {
+    if (questionLength > MAX_QUESTION_LENGTH && customPrompt === trimmedQuestion) {
       setError(`Сделайте вопрос чуть короче. Лимит: ${MAX_QUESTION_LENGTH} символов.`)
       return
     }
@@ -144,7 +265,6 @@ function App() {
     setLoading(true)
     setError('')
     setStatus('')
-    setAnswer('')
 
     try {
       const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
@@ -159,11 +279,11 @@ function App() {
           messages: [
             {
               role: 'system',
-              content: levelPrompts[level],
+              content: `${levelPrompts[level]} ${lifeModes[lifeMode].prompt}`,
             },
             {
               role: 'user',
-              content: `Объясни это понятно: ${trimmedQuestion}`,
+              content: `Объясни это понятно: ${prompt}`,
             },
           ],
         }),
@@ -201,12 +321,56 @@ function App() {
       }
 
       setAnswer(text)
+      setSelfCheck(buildCheckQuestions(prompt))
+      addToHistory(prompt, text)
       setStatus('Готово! Ответ ниже. Если нужно — скопируйте одной кнопкой.')
     } catch (err) {
       setError(err.message || 'Что-то пошло не так, но мы уже почти у цели. Попробуйте ещё раз.')
     } finally {
       setLoading(false)
     }
+  }
+
+  const explainSimpler = () => {
+    if (!answer.trim()) {
+      setStatus('Сначала нужен обычный ответ, потом сделаем ещё проще.')
+      return
+    }
+
+    explain(`Сделай объяснение ещё проще и короче, с 1 бытовым примером: ${answer}`)
+  }
+
+  const toggleSpeech = () => {
+    if (!('speechSynthesis' in window)) {
+      setError('В этом браузере нет голосового режима. Попробуйте открыть сайт в Chrome или Edge.')
+      return
+    }
+
+    if (!answer.trim()) {
+      setStatus('Сначала получите ответ, и я смогу его озвучить.')
+      return
+    }
+
+    if (isSpeaking) {
+      window.speechSynthesis.cancel()
+      setIsSpeaking(false)
+      setStatus('Озвучку остановили.')
+      return
+    }
+
+    const utterance = new SpeechSynthesisUtterance(answer)
+    utterance.lang = 'ru-RU'
+    utterance.rate = 1
+    utterance.onend = () => setIsSpeaking(false)
+    utterance.onerror = () => {
+      setIsSpeaking(false)
+      setError('Не вышло запустить озвучку. Попробуйте ещё раз.')
+    }
+
+    window.speechSynthesis.cancel()
+    window.speechSynthesis.speak(utterance)
+    setIsSpeaking(true)
+    setStatus('Читаю вслух. Можно слушать и заниматься своими делами.')
   }
 
   const onQuestionKeyDown = (event) => {
@@ -227,6 +391,17 @@ function App() {
   return (
     <div className="min-h-screen bg-app px-4 py-6 text-main transition-colors sm:px-6 sm:py-8">
       <div className="mx-auto max-w-3xl rounded-3xl border border-main bg-card p-5 shadow-xl transition-colors sm:p-8">
+        {!hasApiKey && (
+          <div className="mb-5 rounded-2xl border border-amber-300 bg-amber-100/90 p-4 text-sm text-amber-900">
+            <p className="font-bold">Первый запуск за 3 шага:</p>
+            <ol className="mt-2 list-decimal space-y-1 pl-4">
+              <li>Нажмите кнопку «Настройки» справа сверху.</li>
+              <li>Вставьте ваш ключ с сайта Groq и сохраните.</li>
+              <li>Введите вопрос и нажмите «Объяснить».</li>
+            </ol>
+          </div>
+        )}
+
         <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -240,7 +415,7 @@ function App() {
               <span className="text-accent"> простыми словами</span>
             </h1>
             <p className="mt-3 text-base text-soft sm:text-lg">
-              Введите вопрос, выберите уровень и получите понятный ответ. Горячая клавиша: Ctrl + Enter.
+              Введите вопрос, выберите формат и получите понятный ответ. Горячая клавиша: Ctrl + Enter.
             </p>
           </div>
           <button
@@ -284,6 +459,39 @@ function App() {
               ))}
             </select>
           </label>
+
+          <label className="block sm:col-span-2" htmlFor="mode-select-inline">
+            <span className="mb-2 block text-sm font-semibold text-soft">Режим жизни</span>
+            <select
+              id="mode-select-inline"
+              value={lifeMode}
+              onChange={(e) => setLifeMode(e.target.value)}
+              className="focus-ring w-full rounded-2xl border border-main bg-input px-4 py-3 text-base text-main"
+            >
+              {Object.entries(lifeModes).map(([value, mode]) => (
+                <option key={value} value={value}>
+                  {mode.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        <div className="mb-4 rounded-2xl border border-main bg-card-soft p-3">
+          <p className="mb-2 text-xs font-bold uppercase tracking-wide text-soft">Готовые сценарии</p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {templateCards.map((card) => (
+              <button
+                key={card.title}
+                type="button"
+                onClick={() => setQuestion(card.question)}
+                className="focus-ring rounded-2xl border border-main bg-input p-3 text-left transition hover:-translate-y-0.5"
+              >
+                <p className="text-xs font-bold uppercase tracking-wide text-soft">{card.title}</p>
+                <p className="mt-1 text-sm font-semibold text-main">{card.question}</p>
+              </button>
+            ))}
+          </div>
         </div>
 
         <form
@@ -334,19 +542,6 @@ function App() {
             </div>
           </label>
 
-          <div className="flex flex-wrap gap-2">
-            {quickExamples.map((example) => (
-              <button
-                key={example}
-                type="button"
-                onClick={() => setQuestion(example)}
-                className="focus-ring rounded-full border border-main bg-card-soft px-3 py-2 text-xs font-semibold text-main transition hover:-translate-y-0.5 hover:opacity-95"
-              >
-                {example}
-              </button>
-            ))}
-          </div>
-
           <div className="flex flex-col gap-3 sm:flex-row">
             <button
               type="submit"
@@ -359,10 +554,20 @@ function App() {
 
             <button
               type="button"
+              onClick={explainSimpler}
+              disabled={loading || !answer.trim()}
+              className="focus-ring w-full rounded-2xl border border-main bg-card-soft px-5 py-4 text-sm font-bold text-main transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Ещё проще
+            </button>
+
+            <button
+              type="button"
               onClick={() => {
                 setQuestion('')
                 setAnswer('')
                 setError('')
+                setSelfCheck([])
                 setStatus('Поле очищено. Можно задать новый вопрос.')
               }}
               className="focus-ring w-full rounded-2xl border border-main bg-card-soft px-5 py-4 text-sm font-bold text-main transition hover:opacity-90 sm:max-w-40"
@@ -385,16 +590,26 @@ function App() {
         )}
 
         <div className="mt-4 rounded-2xl border border-main bg-card-soft p-4" aria-live="polite">
-          <div className="mb-3 flex items-center justify-between gap-2">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-sm font-bold uppercase tracking-wide text-soft">Ответ</h2>
-            <button
-              type="button"
-              onClick={copyAnswer}
-              disabled={!answer.trim()}
-              className="focus-ring rounded-xl border border-main bg-input px-3 py-2 text-xs font-bold text-main transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Копировать
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={copyAnswer}
+                disabled={!answer.trim()}
+                className="focus-ring rounded-xl border border-main bg-input px-3 py-2 text-xs font-bold text-main transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Копировать
+              </button>
+              <button
+                type="button"
+                onClick={toggleSpeech}
+                disabled={!answer.trim()}
+                className="focus-ring rounded-xl border border-main bg-input px-3 py-2 text-xs font-bold text-main transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isSpeaking ? 'Остановить голос' : 'Слушать голосом'}
+              </button>
+            </div>
           </div>
 
           {loading ? (
@@ -405,8 +620,62 @@ function App() {
             </div>
           ) : (
             <p className="whitespace-pre-wrap text-base leading-relaxed text-main">
-              {answer || 'Здесь появится готовое понятное объяснение. Пока можно выбрать пример выше и нажать «Объяснить».'}
+              {answer || 'Здесь появится готовое понятное объяснение. Пока можно выбрать сценарий выше и нажать «Объяснить».'}
             </p>
+          )}
+
+          <div className="mt-4 rounded-xl border border-main bg-input p-3">
+            <p className="text-xs font-bold uppercase tracking-wide text-soft">Надёжность ответа: {reliability.level}</p>
+            <p className="mt-1 text-sm text-main">{reliability.description}</p>
+          </div>
+
+          {selfCheck.length > 0 && (
+            <div className="mt-4 rounded-xl border border-main bg-input p-3">
+              <p className="text-xs font-bold uppercase tracking-wide text-soft">Мини-проверка понимания</p>
+              <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-main">
+                {selfCheck.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4 rounded-2xl border border-main bg-card-soft p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-sm font-bold uppercase tracking-wide text-soft">История последних объяснений</h2>
+            <button
+              type="button"
+              onClick={() => {
+                setHistory([])
+                setStatus('История очищена.')
+              }}
+              className="focus-ring rounded-xl border border-main bg-input px-3 py-2 text-xs font-bold text-main"
+            >
+              Очистить историю
+            </button>
+          </div>
+          {history.length === 0 ? (
+            <p className="text-sm text-soft">Пока пусто. Первый ответ появится здесь автоматически.</p>
+          ) : (
+            <div className="space-y-2">
+              {history.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    setQuestion(item.question)
+                    setAnswer(item.answer)
+                    setSelfCheck(buildCheckQuestions(item.question))
+                    setStatus('Открыли ответ из истории.')
+                  }}
+                  className="focus-ring w-full rounded-2xl border border-main bg-input p-3 text-left"
+                >
+                  <p className="text-xs font-semibold text-soft">{item.mode} · {item.level}</p>
+                  <p className="mt-1 text-sm font-semibold text-main">{item.question}</p>
+                </button>
+              ))}
+            </div>
           )}
         </div>
       </div>
