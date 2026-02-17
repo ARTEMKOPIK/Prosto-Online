@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 const API_KEY_STORAGE = 'prosto-online-groq-key'
 const THEME_STORAGE = 'prosto-online-theme'
 const LEVEL_STORAGE = 'prosto-online-level'
+const DRAFT_STORAGE = 'prosto-online-question-draft'
 const MAX_QUESTION_LENGTH = 350
 
 const levelPrompts = {
@@ -51,6 +52,7 @@ function App() {
   const [apiKeyInput, setApiKeyInput] = useState('')
   const [savedApiKey, setSavedApiKey] = useState('')
   const [theme, setTheme] = useState('light')
+  const [showApiKey, setShowApiKey] = useState(false)
 
   const questionRef = useRef(null)
   const settingsPanelRef = useRef(null)
@@ -59,6 +61,7 @@ function App() {
     const key = localStorage.getItem(API_KEY_STORAGE) || ''
     const savedTheme = localStorage.getItem(THEME_STORAGE) || 'light'
     const savedLevel = localStorage.getItem(LEVEL_STORAGE) || 'adult'
+    const savedDraft = localStorage.getItem(DRAFT_STORAGE) || ''
 
     const hasTheme = themeOptions.some((option) => option.value === savedTheme)
     const hasLevel = Object.hasOwn(levelLabels, savedLevel)
@@ -67,6 +70,7 @@ function App() {
     setApiKeyInput(key)
     setTheme(hasTheme ? savedTheme : 'light')
     setLevel(hasLevel ? savedLevel : 'adult')
+    setQuestion(savedDraft.slice(0, MAX_QUESTION_LENGTH))
   }, [])
 
   useEffect(() => {
@@ -79,6 +83,10 @@ function App() {
   }, [level])
 
   useEffect(() => {
+    localStorage.setItem(DRAFT_STORAGE, question)
+  }, [question])
+
+  useEffect(() => {
     if (showSettings) {
       settingsPanelRef.current?.focus()
       return
@@ -89,8 +97,10 @@ function App() {
 
   const hasApiKey = useMemo(() => savedApiKey.trim().length > 0, [savedApiKey])
   const trimmedQuestion = question.trim()
-  const canExplain = trimmedQuestion.length > 3 && !loading
+  const canExplain = trimmedQuestion.length > 3 && !loading && question.length <= MAX_QUESTION_LENGTH
   const questionLength = question.length
+  const remainingChars = MAX_QUESTION_LENGTH - questionLength
+  const isNearLimit = remainingChars <= 50
 
   const saveApiKey = () => {
     const cleaned = apiKeyInput.trim()
@@ -117,6 +127,11 @@ function App() {
   const explain = async () => {
     if (trimmedQuestion.length < 4) {
       setError('Добавьте чуть больше деталей (минимум 4 символа), и я всё разложу по полочкам.')
+      return
+    }
+
+    if (questionLength > MAX_QUESTION_LENGTH) {
+      setError(`Сделайте вопрос чуть короче. Лимит: ${MAX_QUESTION_LENGTH} символов.`)
       return
     }
 
@@ -214,7 +229,12 @@ function App() {
       <div className="mx-auto max-w-3xl rounded-3xl border border-main bg-card p-5 shadow-xl transition-colors sm:p-8">
         <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <p className="mb-2 inline-flex rounded-full bg-badge px-3 py-1 text-xs font-bold text-badge-text">Просто.Онлайн</p>
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <p className="inline-flex rounded-full bg-badge px-3 py-1 text-xs font-bold text-badge-text">Просто.Онлайн</p>
+              <span className={`rounded-full px-3 py-1 text-xs font-bold ${hasApiKey ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                {hasApiKey ? 'Ключ подключён' : 'Добавьте API-ключ'}
+              </span>
+            </div>
             <h1 className="text-3xl font-extrabold leading-tight sm:text-4xl">
               Объясняем сложное
               <span className="text-accent"> простыми словами</span>
@@ -226,13 +246,13 @@ function App() {
           <button
             type="button"
             onClick={() => setShowSettings(true)}
-            className="focus-ring shrink-0 rounded-2xl bg-main-button px-4 py-3 text-sm font-semibold text-main-button-text transition hover:opacity-90"
+            className="focus-ring shrink-0 rounded-2xl bg-main-button px-4 py-3 text-sm font-semibold text-main-button-text transition hover:-translate-y-0.5 hover:opacity-90"
           >
             Настройки
           </button>
         </div>
 
-        <div className="mb-4 rounded-2xl border border-main bg-card-soft px-4 py-3">
+        <div className="mb-4 grid gap-3 rounded-2xl border border-main bg-card-soft px-4 py-3 sm:grid-cols-2">
           <label className="block" htmlFor="theme-select">
             <span className="mb-2 block text-sm font-semibold text-soft">Тема оформления</span>
             <select
@@ -248,13 +268,37 @@ function App() {
               ))}
             </select>
           </label>
+
+          <label className="block" htmlFor="level-select-inline">
+            <span className="mb-2 block text-sm font-semibold text-soft">Кому объяснять</span>
+            <select
+              id="level-select-inline"
+              value={level}
+              onChange={(e) => setLevel(e.target.value)}
+              className="focus-ring w-full rounded-2xl border border-main bg-input px-4 py-3 text-base text-main"
+            >
+              {Object.entries(levelLabels).map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </label>
         </div>
 
-        <div className="space-y-4">
+        <form
+          className="space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (canExplain) {
+              explain()
+            }
+          }}
+        >
           <label className="block" htmlFor="question-input">
             <div className="mb-2 flex items-center justify-between gap-2">
               <span className="block text-sm font-semibold text-soft">Что нужно объяснить?</span>
-              <span className={`text-xs font-semibold ${questionLength > MAX_QUESTION_LENGTH ? 'text-rose-600' : 'text-soft'}`}>
+              <span className={`text-xs font-semibold ${questionLength > MAX_QUESTION_LENGTH ? 'text-rose-600' : isNearLimit ? 'text-amber-600' : 'text-soft'}`}>
                 {questionLength}/{MAX_QUESTION_LENGTH}
               </span>
             </div>
@@ -262,16 +306,32 @@ function App() {
               ref={questionRef}
               id="question-input"
               value={question}
-              onChange={(e) => setQuestion(e.target.value.slice(0, MAX_QUESTION_LENGTH + 25))}
+              onChange={(e) => {
+                setQuestion(e.target.value.slice(0, MAX_QUESTION_LENGTH))
+                if (error) {
+                  setError('')
+                }
+              }}
               onKeyDown={onQuestionKeyDown}
               rows={5}
               placeholder="Например: Объясни, как работает ипотека простыми словами"
               className="focus-ring w-full rounded-2xl border border-main bg-input px-4 py-3 text-base text-main"
               aria-describedby="question-help"
             />
-            <p id="question-help" className="mt-2 text-xs text-soft">
-              Чем конкретнее вопрос, тем полезнее ответ.
-            </p>
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+              <p id="question-help" className="text-xs text-soft">
+                Чем конкретнее вопрос, тем полезнее ответ.
+              </p>
+              <p className={`text-xs font-semibold ${isNearLimit ? 'text-amber-600' : 'text-soft'}`}>
+                {remainingChars >= 0 ? `Осталось ${remainingChars} симв.` : 'Слишком длинный вопрос'}
+              </p>
+            </div>
+            <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-main/10" aria-hidden="true">
+              <div
+                className={`h-full rounded-full transition-all ${questionLength > MAX_QUESTION_LENGTH ? 'bg-rose-500' : isNearLimit ? 'bg-amber-500' : 'bg-accent'}`}
+                style={{ width: `${Math.min((questionLength / MAX_QUESTION_LENGTH) * 100, 100)}%` }}
+              />
+            </div>
           </label>
 
           <div className="flex flex-wrap gap-2">
@@ -287,26 +347,9 @@ function App() {
             ))}
           </div>
 
-          <label className="block" htmlFor="level-select">
-            <span className="mb-2 block text-sm font-semibold text-soft">Уровень объяснения</span>
-            <select
-              id="level-select"
-              value={level}
-              onChange={(e) => setLevel(e.target.value)}
-              className="focus-ring w-full rounded-2xl border border-main bg-input px-4 py-3 text-base text-main"
-            >
-              {Object.entries(levelLabels).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
-
           <div className="flex flex-col gap-3 sm:flex-row">
             <button
-              type="button"
-              onClick={explain}
+              type="submit"
               disabled={!canExplain}
               className="focus-ring flex w-full items-center justify-center gap-2 rounded-2xl bg-accent px-5 py-4 text-lg font-bold text-accent-text transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
             >
@@ -320,51 +363,51 @@ function App() {
                 setQuestion('')
                 setAnswer('')
                 setError('')
-                setStatus('')
+                setStatus('Поле очищено. Можно задать новый вопрос.')
               }}
               className="focus-ring w-full rounded-2xl border border-main bg-card-soft px-5 py-4 text-sm font-bold text-main transition hover:opacity-90 sm:max-w-40"
             >
               Очистить
             </button>
           </div>
+        </form>
 
-          {error && (
-            <div role="alert" className="rounded-2xl border border-rose-300 bg-rose-100 px-4 py-3 text-sm font-medium text-rose-800">
-              {error}
+        {error && (
+          <div role="alert" className="mt-4 rounded-2xl border border-rose-300 bg-rose-100 px-4 py-3 text-sm font-medium text-rose-800">
+            {error}
+          </div>
+        )}
+
+        {status && (
+          <p role="status" aria-live="polite" className="mt-4 rounded-2xl border border-emerald-300 bg-emerald-100 px-4 py-3 text-sm font-semibold text-emerald-800">
+            {status}
+          </p>
+        )}
+
+        <div className="mt-4 rounded-2xl border border-main bg-card-soft p-4" aria-live="polite">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h2 className="text-sm font-bold uppercase tracking-wide text-soft">Ответ</h2>
+            <button
+              type="button"
+              onClick={copyAnswer}
+              disabled={!answer.trim()}
+              className="focus-ring rounded-xl border border-main bg-input px-3 py-2 text-xs font-bold text-main transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Копировать
+            </button>
+          </div>
+
+          {loading ? (
+            <div className="space-y-2" aria-hidden="true">
+              <div className="skeleton-line h-4 w-11/12 rounded" />
+              <div className="skeleton-line h-4 w-full rounded" />
+              <div className="skeleton-line h-4 w-10/12 rounded" />
             </div>
-          )}
-
-          {status && (
-            <p role="status" aria-live="polite" className="rounded-2xl border border-emerald-300 bg-emerald-100 px-4 py-3 text-sm font-semibold text-emerald-800">
-              {status}
+          ) : (
+            <p className="whitespace-pre-wrap text-base leading-relaxed text-main">
+              {answer || 'Здесь появится готовое понятное объяснение. Пока можно выбрать пример выше и нажать «Объяснить».'}
             </p>
           )}
-
-          <div className="rounded-2xl border border-main bg-card-soft p-4" aria-live="polite">
-            <div className="mb-3 flex items-center justify-between gap-2">
-              <h2 className="text-sm font-bold uppercase tracking-wide text-soft">Ответ</h2>
-              <button
-                type="button"
-                onClick={copyAnswer}
-                disabled={!answer.trim()}
-                className="focus-ring rounded-xl border border-main bg-input px-3 py-2 text-xs font-bold text-main transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Копировать
-              </button>
-            </div>
-
-            {loading ? (
-              <div className="space-y-2" aria-hidden="true">
-                <div className="h-4 w-11/12 rounded bg-main/10" />
-                <div className="h-4 w-full rounded bg-main/10" />
-                <div className="h-4 w-10/12 rounded bg-main/10" />
-              </div>
-            ) : (
-              <p className="whitespace-pre-wrap text-base leading-relaxed text-main">
-                {answer || 'Здесь появится готовое понятное объяснение.'}
-              </p>
-            )}
-          </div>
         </div>
       </div>
 
@@ -386,9 +429,19 @@ function App() {
             aria-modal="true"
             aria-labelledby="settings-title"
           >
-            <h3 id="settings-title" className="text-2xl font-extrabold">
-              Настройки Groq
-            </h3>
+            <div className="flex items-start justify-between gap-3">
+              <h3 id="settings-title" className="text-2xl font-extrabold">
+                Настройки Groq
+              </h3>
+              <button
+                type="button"
+                className="focus-ring rounded-xl border border-main px-3 py-2 text-xs font-bold"
+                onClick={() => setShowSettings(false)}
+                aria-label="Закрыть настройки"
+              >
+                ✕
+              </button>
+            </div>
             <p className="mt-2 text-sm text-soft">
               Вставьте ключ один раз — мы сохраним его в этом браузере. Получить ключ можно в личном кабинете:
               <span className="font-semibold"> https://console.groq.com/keys</span>
@@ -396,14 +449,23 @@ function App() {
 
             <label className="mt-4 block" htmlFor="api-key">
               <span className="mb-2 block text-sm font-semibold text-soft">Groq API Key</span>
-              <input
-                id="api-key"
-                type="password"
-                value={apiKeyInput}
-                onChange={(e) => setApiKeyInput(e.target.value)}
-                placeholder="gsk_..."
-                className="focus-ring w-full rounded-2xl border border-main bg-input px-4 py-3 text-base text-main"
-              />
+              <div className="flex gap-2">
+                <input
+                  id="api-key"
+                  type={showApiKey ? 'text' : 'password'}
+                  value={apiKeyInput}
+                  onChange={(e) => setApiKeyInput(e.target.value)}
+                  placeholder="gsk_..."
+                  className="focus-ring w-full rounded-2xl border border-main bg-input px-4 py-3 text-base text-main"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowApiKey((prev) => !prev)}
+                  className="focus-ring rounded-2xl border border-main bg-card-soft px-3 py-2 text-xs font-bold"
+                >
+                  {showApiKey ? 'Скрыть' : 'Показать'}
+                </button>
+              </div>
             </label>
 
             <div className="mt-5 flex flex-wrap justify-end gap-3">
