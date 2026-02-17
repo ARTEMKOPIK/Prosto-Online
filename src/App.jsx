@@ -6,8 +6,13 @@ const LEVEL_STORAGE = 'prosto-online-level'
 const DRAFT_STORAGE = 'prosto-online-question-draft'
 const MODE_STORAGE = 'prosto-online-mode'
 const HISTORY_STORAGE = 'prosto-online-history'
+const AUTH_PENDING_STORAGE = 'prosto-online-auth-pending'
+const AUTH_SESSION_STORAGE = 'prosto-online-auth-session'
 const MAX_QUESTION_LENGTH = 350
 const MAX_HISTORY_ITEMS = 10
+const CODE_LENGTH = 6
+const CODE_TTL_MS = 10 * 60 * 1000
+const CODE_COOLDOWN_SECONDS = 60
 
 const levelPrompts = {
   child:
@@ -111,6 +116,34 @@ const buildCheckQuestions = (questionText) => {
   ]
 }
 
+const normalizeEmail = (value) => value.trim().toLowerCase()
+const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+
+const parseJwtPayload = (token) => {
+  if (!token) {
+    return null
+  }
+
+  try {
+    const payloadPart = token.split('.')[1]
+    if (!payloadPart) {
+      return null
+    }
+
+    const base64 = payloadPart.replace(/-/g, '+').replace(/_/g, '/')
+    const json = decodeURIComponent(
+      atob(base64)
+        .split('')
+        .map((char) => `%${`00${char.charCodeAt(0).toString(16)}`.slice(-2)}`)
+        .join(''),
+    )
+
+    return JSON.parse(json)
+  } catch {
+    return null
+  }
+}
+
 function App() {
   const [question, setQuestion] = useState('')
   const [level, setLevel] = useState('adult')
@@ -127,6 +160,14 @@ function App() {
   const [history, setHistory] = useState([])
   const [selfCheck, setSelfCheck] = useState([])
   const [isSpeaking, setIsSpeaking] = useState(false)
+  const [authMode, setAuthMode] = useState('login')
+  const [authEmail, setAuthEmail] = useState('')
+  const [authCode, setAuthCode] = useState('')
+  const [authPending, setAuthPending] = useState(null)
+  const [authSession, setAuthSession] = useState(null)
+  const [authNotice, setAuthNotice] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [now, setNow] = useState(Date.now())
 
   const questionRef = useRef(null)
   const settingsPanelRef = useRef(null)
@@ -160,6 +201,40 @@ function App() {
     setLifeMode(hasMode ? savedMode : 'fast')
     setQuestion(savedDraft.slice(0, MAX_QUESTION_LENGTH))
     setHistory(parsedHistory)
+
+    const rawPending = localStorage.getItem(AUTH_PENDING_STORAGE)
+    const rawSession = localStorage.getItem(AUTH_SESSION_STORAGE)
+
+    if (rawPending) {
+      try {
+        const parsedPending = JSON.parse(rawPending)
+        if (parsedPending?.email && parsedPending?.proofToken && parsedPending?.expiresAt > Date.now()) {
+          setAuthPending(parsedPending)
+          setAuthEmail(parsedPending.email)
+          setAuthMode(parsedPending.type || 'login')
+          setAuthNotice(`Код уже отправлен на ${parsedPending.email}. Проверьте почту и введите ${CODE_LENGTH} цифр.`)
+        }
+      } catch {
+        localStorage.removeItem(AUTH_PENDING_STORAGE)
+      }
+    }
+
+    if (rawSession) {
+      try {
+        const parsedSession = JSON.parse(rawSession)
+        if (parsedSession?.email && parsedSession?.token) {
+          const payload = parseJwtPayload(parsedSession.token)
+          if (payload?.exp && payload.exp * 1000 > Date.now()) {
+            setAuthSession(parsedSession)
+            setAuthEmail(parsedSession.email)
+          } else {
+            localStorage.removeItem(AUTH_SESSION_STORAGE)
+          }
+        }
+      } catch {
+        localStorage.removeItem(AUTH_SESSION_STORAGE)
+      }
+    }
   }, [])
 
   useEffect(() => {
@@ -184,6 +259,83 @@ function App() {
   }, [history])
 
   useEffect(() => {
+    if (authPending) {
+      localStorage.setItem(AUTH_PENDING_STORAGE, JSON.stringify(authPending))
+      return
+    }
+
+    localStorage.removeItem(AUTH_PENDING_STORAGE)
+  }, [authPending])
+
+  useEffect(() => {
+    if (authSession) {
+      localStorage.setItem(AUTH_SESSION_STORAGE, JSON.stringify(authSession))
+      return
+    }
+
+    localStorage.removeItem(AUTH_SESSION_STORAGE)
+  }, [authSession])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNow(Date.now())
+    }, 1000)
+
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    if (authPending && authPending.expiresAt <= now) {
+      setAuthPending(null)
+      setAuthCode('')
+      setAuthNotice('Старый код истёк. Нажмите «Отправить код» снова.')
+    }
+  }, [authPending, now])
+
+  useEffect(() => {
+    if (!authSession?.token) {
+      return
+    }
+
+    const payload = parseJwtPayload(authSession.token)
+    if (payload?.exp && payload.exp * 1000 <= now) {
+      setAuthSession(null)
+      setAuthNotice('Сессия истекла. Войдите снова.')
+    }
+  }, [authSession, now])
+
+  useEffect(() => {
+    if (!authSession?.token) {
+      return
+    }
+
+    let cancelled = false
+
+    const checkSession = async () => {
+      try {
+        const response = await fetch('/api/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionToken: authSession.token }),
+        })
+
+        if (!response.ok && !cancelled) {
+          setAuthSession(null)
+          setAuthNotice('Сессия недействительна. Войдите снова.')
+        }
+      } catch {
+        // Если API недоступно (локальный vite dev), не сбрасываем сессию.
+      }
+    }
+
+    checkSession()
+
+    return () => {
+      cancelled = true
+    }
+  }, [authSession?.token])
+
+  useEffect(() => {
     if (showSettings) {
       settingsPanelRef.current?.focus()
       return
@@ -202,11 +354,15 @@ function App() {
 
   const hasApiKey = useMemo(() => savedApiKey.trim().length > 0, [savedApiKey])
   const trimmedQuestion = question.trim()
-  const canExplain = trimmedQuestion.length > 3 && !loading && question.length <= MAX_QUESTION_LENGTH
+  const isAuthed = Boolean(authSession?.email)
+  const canExplain = isAuthed && trimmedQuestion.length > 3 && !loading && question.length <= MAX_QUESTION_LENGTH
   const questionLength = question.length
   const remainingChars = MAX_QUESTION_LENGTH - questionLength
   const isNearLimit = remainingChars <= 50
   const reliability = useMemo(() => buildReliability(answer), [answer])
+  const isCodeFlowActive = Boolean(authPending)
+  const cooldownLeft = authPending ? Math.max(0, Math.ceil((authPending.cooldownUntil - now) / 1000)) : 0
+  const expiresIn = authPending ? Math.max(0, Math.ceil((authPending.expiresAt - now) / 1000)) : 0
 
   const saveApiKey = () => {
     const cleaned = apiKeyInput.trim()
@@ -243,6 +399,117 @@ function App() {
     setHistory((prev) => [entry, ...prev].slice(0, MAX_HISTORY_ITEMS))
   }
 
+  const requestEmailCode = async () => {
+    const email = normalizeEmail(authEmail)
+
+    if (!isValidEmail(email)) {
+      setAuthError('Введите корректную почту, например name@mail.ru.')
+      return
+    }
+
+    if (authPending && cooldownLeft > 0) {
+      setAuthError(`Подождите ${cooldownLeft} сек. и отправьте код снова.`)
+      return
+    }
+
+    setAuthError('')
+    setAuthNotice('Отправляем код на почту...')
+
+    try {
+      const response = await fetch('/api/send-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, mode: authMode }),
+      })
+
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data?.error || 'Не удалось отправить код. Попробуйте позже.')
+      }
+
+      const pending = {
+        email,
+        proofToken: data.proofToken,
+        type: authMode,
+        expiresAt: Date.now() + (data.expiresInSec || CODE_TTL_MS / 1000) * 1000,
+        cooldownUntil: Date.now() + (data.cooldownSec || CODE_COOLDOWN_SECONDS) * 1000,
+      }
+
+      setAuthPending(pending)
+      setAuthCode('')
+      setAuthEmail(email)
+      setAuthNotice(`Код отправлен на ${email}. Загляните в почту ✉️`)
+    } catch (err) {
+      setAuthError(err.message || 'Ошибка отправки кода. Попробуйте позже.')
+      setAuthNotice('')
+    }
+  }
+
+  const verifyEmailCode = async () => {
+    if (!authPending?.proofToken) {
+      setAuthError('Сначала нажмите «Отправить код».')
+      return
+    }
+
+    const enteredCode = authCode.trim()
+    if (!/^\d{6}$/.test(enteredCode)) {
+      setAuthError('Код должен состоять из 6 цифр.')
+      return
+    }
+
+    if (authPending.expiresAt <= Date.now()) {
+      setAuthPending(null)
+      setAuthCode('')
+      setAuthError('Код истёк. Отправьте новый.')
+      return
+    }
+
+    setAuthError('')
+    setAuthNotice('Проверяем код...')
+
+    try {
+      const response = await fetch('/api/verify-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: authPending.email,
+          code: enteredCode,
+          proofToken: authPending.proofToken,
+          mode: authPending.type,
+        }),
+      })
+
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data?.error || 'Код не подошёл.')
+      }
+
+      const session = {
+        email: authPending.email,
+        token: data.sessionToken,
+        signedInAt: new Date().toISOString(),
+      }
+
+      setAuthSession(session)
+      setAuthPending(null)
+      setAuthCode('')
+      setAuthError('')
+      setAuthNotice(`Готово! Вы вошли как ${session.email}.`)
+      setStatus('Авторизация прошла успешно. Теперь доступны все функции.')
+    } catch (err) {
+      setAuthError(err.message || 'Проверка не удалась, попробуйте ещё раз.')
+      setAuthNotice('')
+    }
+  }
+
+  const logout = () => {
+    setAuthSession(null)
+    setAuthCode('')
+    setAuthPending(null)
+    setAuthMode('login')
+    setAuthNotice('Вы вышли из аккаунта. Чтобы продолжить, снова подтвердите вход.')
+  }
+
   const explain = async (customPrompt = trimmedQuestion) => {
     const prompt = customPrompt.trim()
 
@@ -253,6 +520,11 @@ function App() {
 
     if (questionLength > MAX_QUESTION_LENGTH && customPrompt === trimmedQuestion) {
       setError(`Сделайте вопрос чуть короче. Лимит: ${MAX_QUESTION_LENGTH} символов.`)
+      return
+    }
+
+    if (!isAuthed) {
+      setError('Сначала войдите через почту и код подтверждения.')
       return
     }
 
@@ -391,6 +663,111 @@ function App() {
   return (
     <div className="min-h-screen bg-app px-4 py-6 text-main transition-colors sm:px-6 sm:py-8">
       <div className="mx-auto max-w-3xl rounded-3xl border border-main bg-card p-5 shadow-xl transition-colors sm:p-8">
+        <section className="mb-5 rounded-2xl border border-main bg-card-soft p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-bold text-soft">Вход по почте с кодом подтверждения</p>
+            {isAuthed ? (
+              <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">Выполнен вход</span>
+            ) : (
+              <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Требуется вход</span>
+            )}
+          </div>
+
+          {!isAuthed ? (
+            <>
+              <div className="mb-3 inline-flex rounded-2xl border border-main p-1 text-sm">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('login')
+                    setAuthError('')
+                  }}
+                  className={`focus-ring rounded-xl px-3 py-2 font-semibold ${authMode === 'login' ? 'bg-main-button text-main-button-text' : 'text-main'}`}
+                >
+                  Вход
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('signup')
+                    setAuthError('')
+                  }}
+                  className={`focus-ring rounded-xl px-3 py-2 font-semibold ${authMode === 'signup' ? 'bg-main-button text-main-button-text' : 'text-main'}`}
+                >
+                  Регистрация
+                </button>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block sm:col-span-2" htmlFor="auth-email-input">
+                  <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-soft">Email</span>
+                  <input
+                    id="auth-email-input"
+                    type="email"
+                    autoComplete="email"
+                    value={authEmail}
+                    onChange={(event) => setAuthEmail(event.target.value)}
+                    placeholder="name@mail.ru"
+                    className="focus-ring w-full rounded-2xl border border-main bg-input px-4 py-3 text-base text-main"
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={requestEmailCode}
+                  disabled={Boolean(authPending && cooldownLeft > 0)}
+                  className="focus-ring rounded-2xl bg-main-button px-4 py-3 text-sm font-semibold text-main-button-text transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {authPending && cooldownLeft > 0 ? `Отправить снова через ${cooldownLeft} сек` : 'Отправить код'}
+                </button>
+
+                <label className="block" htmlFor="auth-code-input">
+                  <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-soft">Код из письма</span>
+                  <input
+                    id="auth-code-input"
+                    type="text"
+                    inputMode="numeric"
+                    value={authCode}
+                    maxLength={CODE_LENGTH}
+                    onChange={(event) => setAuthCode(event.target.value.replace(/\D/g, ''))}
+                    placeholder="000000"
+                    className="focus-ring w-full rounded-2xl border border-main bg-input px-4 py-3 text-base tracking-[0.25em] text-main"
+                  />
+                </label>
+              </div>
+
+              <button
+                type="button"
+                onClick={verifyEmailCode}
+                disabled={!isCodeFlowActive}
+                className="focus-ring mt-3 w-full rounded-2xl bg-accent px-4 py-3 text-sm font-bold text-accent-text transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Подтвердить и войти
+              </button>
+
+              {isCodeFlowActive && (
+                <p className="mt-2 text-xs text-soft">Код действителен ещё {expiresIn} сек.</p>
+              )}
+            </>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-300 bg-emerald-100/70 px-4 py-3 text-sm text-emerald-900">
+              <p>
+                Вы вошли как <span className="font-bold">{authSession.email}</span>. Все функции открыты ✅
+              </p>
+              <button
+                type="button"
+                onClick={logout}
+                className="focus-ring rounded-xl border border-emerald-400 bg-white px-3 py-2 text-xs font-bold text-emerald-800 transition hover:-translate-y-0.5"
+              >
+                Выйти
+              </button>
+            </div>
+          )}
+
+          {authNotice && <p className="mt-3 rounded-xl border border-sky-300 bg-sky-100 px-3 py-2 text-sm text-sky-900">{authNotice}</p>}
+          {authError && <p className="mt-3 rounded-xl border border-rose-300 bg-rose-100 px-3 py-2 text-sm text-rose-800">{authError}</p>}
+        </section>
+
         {!hasApiKey && (
           <div className="mb-5 rounded-2xl border border-amber-300 bg-amber-100/90 p-4 text-sm text-amber-900">
             <p className="font-bold">Первый запуск за 3 шага:</p>
