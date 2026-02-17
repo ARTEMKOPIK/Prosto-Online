@@ -6,8 +6,15 @@ const LEVEL_STORAGE = 'prosto-online-level'
 const DRAFT_STORAGE = 'prosto-online-question-draft'
 const MODE_STORAGE = 'prosto-online-mode'
 const HISTORY_STORAGE = 'prosto-online-history'
+const USERS_STORAGE = 'prosto-online-auth-users'
+const AUTH_PENDING_STORAGE = 'prosto-online-auth-pending'
+const AUTH_SESSION_STORAGE = 'prosto-online-auth-session'
 const MAX_QUESTION_LENGTH = 350
 const MAX_HISTORY_ITEMS = 10
+const CODE_LENGTH = 6
+const CODE_TTL_MS = 10 * 60 * 1000
+const CODE_COOLDOWN_SECONDS = 60
+const CODE_MAX_ATTEMPTS = 5
 
 const levelPrompts = {
   child:
@@ -111,6 +118,25 @@ const buildCheckQuestions = (questionText) => {
   ]
 }
 
+const normalizeEmail = (value) => value.trim().toLowerCase()
+const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+const generateCode = () => String(Math.floor(Math.random() * 10 ** CODE_LENGTH)).padStart(CODE_LENGTH, '0')
+
+const readUsers = () => {
+  const raw = localStorage.getItem(USERS_STORAGE) || '[]'
+
+  try {
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+const saveUsers = (users) => {
+  localStorage.setItem(USERS_STORAGE, JSON.stringify(users))
+}
+
 function App() {
   const [question, setQuestion] = useState('')
   const [level, setLevel] = useState('adult')
@@ -127,6 +153,14 @@ function App() {
   const [history, setHistory] = useState([])
   const [selfCheck, setSelfCheck] = useState([])
   const [isSpeaking, setIsSpeaking] = useState(false)
+  const [authMode, setAuthMode] = useState('login')
+  const [authEmail, setAuthEmail] = useState('')
+  const [authCode, setAuthCode] = useState('')
+  const [authPending, setAuthPending] = useState(null)
+  const [authSession, setAuthSession] = useState(null)
+  const [authNotice, setAuthNotice] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [now, setNow] = useState(Date.now())
 
   const questionRef = useRef(null)
   const settingsPanelRef = useRef(null)
@@ -160,6 +194,35 @@ function App() {
     setLifeMode(hasMode ? savedMode : 'fast')
     setQuestion(savedDraft.slice(0, MAX_QUESTION_LENGTH))
     setHistory(parsedHistory)
+
+    const rawPending = localStorage.getItem(AUTH_PENDING_STORAGE)
+    const rawSession = localStorage.getItem(AUTH_SESSION_STORAGE)
+
+    if (rawPending) {
+      try {
+        const parsedPending = JSON.parse(rawPending)
+        if (parsedPending?.email && parsedPending?.code && parsedPending?.expiresAt > Date.now()) {
+          setAuthPending(parsedPending)
+          setAuthEmail(parsedPending.email)
+          setAuthMode(parsedPending.type || 'login')
+          setAuthNotice(`Код уже отправлен на ${parsedPending.email}. Проверьте почту и введите ${CODE_LENGTH} цифр.`)
+        }
+      } catch {
+        localStorage.removeItem(AUTH_PENDING_STORAGE)
+      }
+    }
+
+    if (rawSession) {
+      try {
+        const parsedSession = JSON.parse(rawSession)
+        if (parsedSession?.email) {
+          setAuthSession(parsedSession)
+          setAuthEmail(parsedSession.email)
+        }
+      } catch {
+        localStorage.removeItem(AUTH_SESSION_STORAGE)
+      }
+    }
   }, [])
 
   useEffect(() => {
@@ -184,6 +247,40 @@ function App() {
   }, [history])
 
   useEffect(() => {
+    if (authPending) {
+      localStorage.setItem(AUTH_PENDING_STORAGE, JSON.stringify(authPending))
+      return
+    }
+
+    localStorage.removeItem(AUTH_PENDING_STORAGE)
+  }, [authPending])
+
+  useEffect(() => {
+    if (authSession) {
+      localStorage.setItem(AUTH_SESSION_STORAGE, JSON.stringify(authSession))
+      return
+    }
+
+    localStorage.removeItem(AUTH_SESSION_STORAGE)
+  }, [authSession])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNow(Date.now())
+    }, 1000)
+
+    return () => window.clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    if (authPending && authPending.expiresAt <= now) {
+      setAuthPending(null)
+      setAuthCode('')
+      setAuthNotice('Старый код истёк. Нажмите «Отправить код» снова.')
+    }
+  }, [authPending, now])
+
+  useEffect(() => {
     if (showSettings) {
       settingsPanelRef.current?.focus()
       return
@@ -202,11 +299,15 @@ function App() {
 
   const hasApiKey = useMemo(() => savedApiKey.trim().length > 0, [savedApiKey])
   const trimmedQuestion = question.trim()
-  const canExplain = trimmedQuestion.length > 3 && !loading && question.length <= MAX_QUESTION_LENGTH
+  const isAuthed = Boolean(authSession?.email)
+  const canExplain = isAuthed && trimmedQuestion.length > 3 && !loading && question.length <= MAX_QUESTION_LENGTH
   const questionLength = question.length
   const remainingChars = MAX_QUESTION_LENGTH - questionLength
   const isNearLimit = remainingChars <= 50
   const reliability = useMemo(() => buildReliability(answer), [answer])
+  const isCodeFlowActive = Boolean(authPending)
+  const cooldownLeft = authPending ? Math.max(0, Math.ceil((authPending.cooldownUntil - now) / 1000)) : 0
+  const expiresIn = authPending ? Math.max(0, Math.ceil((authPending.expiresAt - now) / 1000)) : 0
 
   const saveApiKey = () => {
     const cleaned = apiKeyInput.trim()
@@ -243,6 +344,111 @@ function App() {
     setHistory((prev) => [entry, ...prev].slice(0, MAX_HISTORY_ITEMS))
   }
 
+  const requestEmailCode = () => {
+    const email = normalizeEmail(authEmail)
+
+    if (!isValidEmail(email)) {
+      setAuthError('Введите корректную почту, например name@mail.ru.')
+      return
+    }
+
+    if (authPending && cooldownLeft > 0) {
+      setAuthError(`Подождите ${cooldownLeft} сек. и отправьте код снова.`)
+      return
+    }
+
+    const users = readUsers()
+    const hasUser = users.some((user) => user.email === email)
+
+    if (authMode === 'signup' && hasUser) {
+      setAuthError('Этот email уже зарегистрирован. Переключитесь на вход.')
+      return
+    }
+
+    if (authMode === 'login' && !hasUser) {
+      setAuthError('Такого email пока нет. Сначала зарегистрируйтесь.')
+      return
+    }
+
+    const code = generateCode()
+    const pending = {
+      email,
+      code,
+      type: authMode,
+      attemptsLeft: CODE_MAX_ATTEMPTS,
+      expiresAt: Date.now() + CODE_TTL_MS,
+      cooldownUntil: Date.now() + CODE_COOLDOWN_SECONDS * 1000,
+    }
+
+    setAuthPending(pending)
+    setAuthCode('')
+    setAuthEmail(email)
+    setAuthError('')
+    setAuthNotice(`Код отправлен на ${email}. Для демо он тоже показан здесь: ${code}`)
+  }
+
+  const verifyEmailCode = () => {
+    if (!authPending) {
+      setAuthError('Сначала нажмите «Отправить код».')
+      return
+    }
+
+    const enteredCode = authCode.trim()
+    if (!/^\d{6}$/.test(enteredCode)) {
+      setAuthError('Код должен состоять из 6 цифр.')
+      return
+    }
+
+    if (authPending.expiresAt <= Date.now()) {
+      setAuthPending(null)
+      setAuthCode('')
+      setAuthError('Код истёк. Отправьте новый.')
+      return
+    }
+
+    if (enteredCode !== authPending.code) {
+      const attemptsLeft = authPending.attemptsLeft - 1
+
+      if (attemptsLeft <= 0) {
+        setAuthPending(null)
+        setAuthCode('')
+        setAuthError('Слишком много попыток. Запросите новый код.')
+        return
+      }
+
+      setAuthPending((prev) => ({ ...prev, attemptsLeft }))
+      setAuthError(`Неверный код. Осталось попыток: ${attemptsLeft}.`)
+      return
+    }
+
+    const users = readUsers()
+
+    if (authPending.type === 'signup' && !users.some((user) => user.email === authPending.email)) {
+      users.push({ email: authPending.email, createdAt: new Date().toISOString() })
+      saveUsers(users)
+    }
+
+    const session = {
+      email: authPending.email,
+      signedInAt: new Date().toISOString(),
+    }
+
+    setAuthSession(session)
+    setAuthPending(null)
+    setAuthCode('')
+    setAuthError('')
+    setAuthNotice(`Готово! Вы вошли как ${session.email}.`)
+    setStatus('Авторизация прошла успешно. Теперь доступны все функции.')
+  }
+
+  const logout = () => {
+    setAuthSession(null)
+    setAuthCode('')
+    setAuthPending(null)
+    setAuthMode('login')
+    setAuthNotice('Вы вышли из аккаунта. Чтобы продолжить, снова подтвердите вход.')
+  }
+
   const explain = async (customPrompt = trimmedQuestion) => {
     const prompt = customPrompt.trim()
 
@@ -253,6 +459,11 @@ function App() {
 
     if (questionLength > MAX_QUESTION_LENGTH && customPrompt === trimmedQuestion) {
       setError(`Сделайте вопрос чуть короче. Лимит: ${MAX_QUESTION_LENGTH} символов.`)
+      return
+    }
+
+    if (!isAuthed) {
+      setError('Сначала войдите через почту и код подтверждения.')
       return
     }
 
@@ -391,6 +602,111 @@ function App() {
   return (
     <div className="min-h-screen bg-app px-4 py-6 text-main transition-colors sm:px-6 sm:py-8">
       <div className="mx-auto max-w-3xl rounded-3xl border border-main bg-card p-5 shadow-xl transition-colors sm:p-8">
+        <section className="mb-5 rounded-2xl border border-main bg-card-soft p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-bold text-soft">Вход по почте с кодом подтверждения</p>
+            {isAuthed ? (
+              <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-bold text-emerald-800">Выполнен вход</span>
+            ) : (
+              <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-bold text-amber-800">Требуется вход</span>
+            )}
+          </div>
+
+          {!isAuthed ? (
+            <>
+              <div className="mb-3 inline-flex rounded-2xl border border-main p-1 text-sm">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('login')
+                    setAuthError('')
+                  }}
+                  className={`focus-ring rounded-xl px-3 py-2 font-semibold ${authMode === 'login' ? 'bg-main-button text-main-button-text' : 'text-main'}`}
+                >
+                  Вход
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('signup')
+                    setAuthError('')
+                  }}
+                  className={`focus-ring rounded-xl px-3 py-2 font-semibold ${authMode === 'signup' ? 'bg-main-button text-main-button-text' : 'text-main'}`}
+                >
+                  Регистрация
+                </button>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block sm:col-span-2" htmlFor="auth-email-input">
+                  <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-soft">Email</span>
+                  <input
+                    id="auth-email-input"
+                    type="email"
+                    autoComplete="email"
+                    value={authEmail}
+                    onChange={(event) => setAuthEmail(event.target.value)}
+                    placeholder="name@mail.ru"
+                    className="focus-ring w-full rounded-2xl border border-main bg-input px-4 py-3 text-base text-main"
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={requestEmailCode}
+                  disabled={Boolean(authPending && cooldownLeft > 0)}
+                  className="focus-ring rounded-2xl bg-main-button px-4 py-3 text-sm font-semibold text-main-button-text transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {authPending && cooldownLeft > 0 ? `Отправить снова через ${cooldownLeft} сек` : 'Отправить код'}
+                </button>
+
+                <label className="block" htmlFor="auth-code-input">
+                  <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-soft">Код из письма</span>
+                  <input
+                    id="auth-code-input"
+                    type="text"
+                    inputMode="numeric"
+                    value={authCode}
+                    maxLength={CODE_LENGTH}
+                    onChange={(event) => setAuthCode(event.target.value.replace(/\D/g, ''))}
+                    placeholder="000000"
+                    className="focus-ring w-full rounded-2xl border border-main bg-input px-4 py-3 text-base tracking-[0.25em] text-main"
+                  />
+                </label>
+              </div>
+
+              <button
+                type="button"
+                onClick={verifyEmailCode}
+                disabled={!isCodeFlowActive}
+                className="focus-ring mt-3 w-full rounded-2xl bg-accent px-4 py-3 text-sm font-bold text-accent-text transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Подтвердить и войти
+              </button>
+
+              {isCodeFlowActive && (
+                <p className="mt-2 text-xs text-soft">Код действителен ещё {expiresIn} сек. Осталось попыток: {authPending.attemptsLeft}.</p>
+              )}
+            </>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-300 bg-emerald-100/70 px-4 py-3 text-sm text-emerald-900">
+              <p>
+                Вы вошли как <span className="font-bold">{authSession.email}</span>. Все функции открыты ✅
+              </p>
+              <button
+                type="button"
+                onClick={logout}
+                className="focus-ring rounded-xl border border-emerald-400 bg-white px-3 py-2 text-xs font-bold text-emerald-800 transition hover:-translate-y-0.5"
+              >
+                Выйти
+              </button>
+            </div>
+          )}
+
+          {authNotice && <p className="mt-3 rounded-xl border border-sky-300 bg-sky-100 px-3 py-2 text-sm text-sky-900">{authNotice}</p>}
+          {authError && <p className="mt-3 rounded-xl border border-rose-300 bg-rose-100 px-3 py-2 text-sm text-rose-800">{authError}</p>}
+        </section>
+
         {!hasApiKey && (
           <div className="mb-5 rounded-2xl border border-amber-300 bg-amber-100/90 p-4 text-sm text-amber-900">
             <p className="font-bold">Первый запуск за 3 шага:</p>
